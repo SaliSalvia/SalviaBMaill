@@ -1,3 +1,12 @@
-
-# release signing keystore - never commit this
-SalviaBMail.jks
+*.iml
+.gradle/
+/local.properties
+.idea/
+.DS_Store
+build/
+/captures
+.externalNativeBuild
+.cxx
+*.keystore
+*.jks
+!debug.keystore
