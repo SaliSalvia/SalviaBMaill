@@ -92,6 +92,7 @@ import ir.salisec.autosender.CampaignDraftItem
 import ir.salisec.autosender.data.AggregateStats
 import ir.salisec.autosender.data.AttachmentGuard
 import ir.salisec.autosender.data.AttachmentSnapshotReader
+import ir.salisec.autosender.data.BusinessDomains
 import ir.salisec.autosender.data.ContactsParser
 import ir.salisec.autosender.data.DomainMatch
 import ir.salisec.autosender.data.MessageEntity
@@ -288,9 +289,22 @@ fun CampaignStudioScreen(
                         val folder = resolvedFolders[c.email]
                         val pair = folder?.let { bundleByUri[it.uri.toString()] }
                         val folderName = pair?.first ?: folder?.name
-                        val bundle = pair?.second?.copy(domain = c.domain) ?: ReportBundle(
-                            domain = c.domain,
-                            warnings = listOf("پوشه‌ای با نام «${c.domain}» یا مشابه در sitest پیدا نشد")
+                        // A mailbox domain is delivery routing, not the company: resolve the real
+                        // business domain from the row, the report itself, or the folder name.
+                        val businessDomain = BusinessDomains.resolve(
+                            explicit = c.businessDomain,
+                            reportDomain = pair?.second?.data?.domain.orEmpty(),
+                            folderName = folderName,
+                            emailDomain = c.domain
+                        )
+                        val bundle = pair?.second?.copy(domain = businessDomain.ifBlank { c.domain }) ?: ReportBundle(
+                            domain = businessDomain.ifBlank { c.domain },
+                            warnings = buildList {
+                                add("پوشه‌ای با نام «${c.domain}» یا مشابه در sitest پیدا نشد")
+                                if (businessDomain.isBlank()) {
+                                    add("دامنه کسب‌وکار این مخاطب مشخص نیست (ایمیل روی ${c.domain} است)؛ برای این ردیف دامنه شرکت را در ستون اول وارد کنید")
+                                }
+                            }
                         )
                         DomainMatch(
                             domain = c.domain,
@@ -299,7 +313,8 @@ fun CampaignStudioScreen(
                             folderName = folderName,
                             bundle = bundle,
                             report = bundle.data,
-                            hasEmail = true
+                            hasEmail = true,
+                            businessDomain = businessDomain
                         )
                     }
                 }
@@ -366,7 +381,7 @@ fun CampaignStudioScreen(
                     } catch (_: Exception) { emptyList() }
                     val restored = CampaignDraftItem(
                         key = key,
-                        domain = m.domain,
+                        domain = m.businessDomain.ifBlank { m.domain },
                         email = m.email,
                         name = m.contactName,
                         match = m,
@@ -390,14 +405,14 @@ fun CampaignStudioScreen(
                         aggregate = aggregate,
                         contactName = m.contactName,
                         isFollowUp = false,
-                        domain = m.domain,
+                        domain = m.businessDomain.ifBlank { m.domain },
                         email = m.email
                     )
                     restored.copy(quality = q)
                 } else {
                     CampaignDraftItem(
                         key = key,
-                        domain = m.domain,
+                        domain = m.businessDomain.ifBlank { m.domain },
                         email = m.email,
                         name = m.contactName,
                         match = m,
@@ -425,7 +440,7 @@ fun CampaignStudioScreen(
                 } catch (_: Exception) { emptyList() }
                 val restored = CampaignDraftItem(
                     key = key,
-                    domain = m.domain,
+                    domain = m.businessDomain.ifBlank { m.domain },
                     email = m.email,
                     name = m.contactName,
                     match = m,
@@ -449,7 +464,7 @@ fun CampaignStudioScreen(
                     aggregate = aggregate,
                     contactName = m.contactName,
                     isFollowUp = false,
-                    domain = m.domain,
+                    domain = m.businessDomain.ifBlank { m.domain },
                     email = m.email
                 )
                 restored.copy(quality = q)

@@ -29,18 +29,23 @@ data class ReportData(
 
 /** A contact (recipient) for a domain. Only ever the user's own lead list. */
 data class Contact(
+    /** Delivery domain of [email]. For a free mailbox this is NOT the recipient's business. */
     val domain: String,
     val email: String,
     val name: String? = null,
     /** Generic role mailbox (info@, sales@ ...) as opposed to a person's address. */
-    val isRole: Boolean = false
+    val isRole: Boolean = false,
+    /** Company domain the user stated explicitly; "" when unknown (never a mailbox domain). */
+    val businessDomain: String = ""
 )
 
 /** Public, company-level context from You.com. Never personal contact data. */
 data class CompanyContext(
     val domain: String,
     val summary: String,
-    val sources: List<String> = emptyList()
+    val sources: List<String> = emptyList(),
+    /** Public business name found on the live site / You.com results ("" if unknown). */
+    val displayName: String = ""
 )
 
 enum class PipelineState { SENT, REPLIED, NEGOTIATING, PAID, LOST }
@@ -87,7 +92,9 @@ data class DomainMatch(
     val folderName: String?,
     val bundle: ReportBundle,
     val report: ReportData?,
-    val hasEmail: Boolean
+    val hasEmail: Boolean,
+    /** Real company domain used for enrichment/identity; "" when it could not be resolved. */
+    val businessDomain: String = ""
 ) {
     /** Key unique per recipient when multiple emails share a domain, or domain otherwise. */
     val key: String get() = email.ifBlank { domain }

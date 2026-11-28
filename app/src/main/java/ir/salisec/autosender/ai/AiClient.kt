@@ -2,7 +2,9 @@ package ir.salisec.autosender.ai
 
 import ir.salisec.autosender.data.AggregateStats
 import ir.salisec.autosender.data.CompanyContext
+import ir.salisec.autosender.data.MailboxDomains
 import ir.salisec.autosender.data.ReportBundle
+import ir.salisec.autosender.data.SalutationBuilder
 import ir.salisec.autosender.data.Settings
 import ir.salisec.autosender.data.AI_PROVIDER_CLOUDFLARE
 import ir.salisec.autosender.data.AI_PROVIDER_GOOGLE
@@ -360,9 +362,12 @@ class AiClient(private val client: OkHttpClient) {
         val allowed = QualityGate.allowedNumbers(bundle)
         val nonClaimIdentifiers = listOfNotNull(bundle?.domain, bundle?.data?.scanId, domain, email, contactName)
             .map { it.trim() }.filter { it.isNotBlank() }.sortedByDescending { it.length }.toSet()
+        // Identity comes from the business, never from the recipient's mailbox provider.
+        val mailboxDomain = email.substringAfter('@', "").trim().lowercase()
+        val salutation = SalutationBuilder.salutation(contactName, domain, context?.displayName.orEmpty())
         val facts = buildFacts(
             s, bundle, context, aggregate, contactName, style,
-            isFollowUp, previousBody, domain, customerReplyText
+            isFollowUp, previousBody, domain, customerReplyText, salutation, mailboxDomain
         )
         val candidateModels = (listOf(activeModel) + knownAvailable.filter { isChatModel(it) })
             .distinct()
@@ -408,7 +413,7 @@ class AiClient(private val client: OkHttpClient) {
         totalPromptTokens += finalDraftOut.promptTokens
         totalCompletionTokens += finalDraftOut.completionTokens
 
-        var result = finalize(QualityGate.bestSubject(parseAiResult(finalDraftOut.content)), s)
+        var result = parseGuarded(finalDraftOut.content, s, salutation, mailboxDomain)
         var report = QualityGate.validate(result, s, allowed, isFollowUp, nonClaimIdentifiers, bundle?.data?.score?.toString())
 
         // 2) CRITIC PASS: ALWAYS attempt when Critic enabled & maxCalls >= 2, but NEVER discard a valid Draft if Critic times out
@@ -435,8 +440,8 @@ class AiClient(private val client: OkHttpClient) {
                 totalPromptTokens += criticOut.promptTokens
                 totalCompletionTokens += criticOut.completionTokens
 
-                val candidate = finalize(QualityGate.bestSubject(parseAiResult(criticOut.content)), s)
-                val candidateReport = QualityGate.validate(candidate, s, allowed, isFollowUp, nonClaimIdentifiers, bundle?.data?.score?.toString())
+                val candidate = parseGuarded(criticOut.content, s, salutation, mailboxDomain)
+                val candidateReport = QualityGate.validate(candidate, s, allowed, isFollowUp, nonClaimIdentifiers, bundle?.data?.score?.toString(), salutation = salutation)
                 if (candidate.body.isNotBlank() && (
                         (candidateReport.passed && (!report.passed || candidateReport.score >= report.score - 5)) ||
                             (!report.passed && candidateReport.score >= report.score)
@@ -461,8 +466,8 @@ class AiClient(private val client: OkHttpClient) {
                 totalPromptTokens += repairOut.promptTokens
                 totalCompletionTokens += repairOut.completionTokens
 
-                val candidate = finalize(QualityGate.bestSubject(parseAiResult(repairOut.content)), s)
-                val candidateReport = QualityGate.validate(candidate, s, allowed, isFollowUp, nonClaimIdentifiers, bundle?.data?.score?.toString())
+                val candidate = parseGuarded(repairOut.content, s, salutation, mailboxDomain)
+                val candidateReport = QualityGate.validate(candidate, s, allowed, isFollowUp, nonClaimIdentifiers, bundle?.data?.score?.toString(), salutation = salutation)
                 if (candidate.body.isNotBlank() && (candidateReport.score >= report.score || candidateReport.passed)) {
                     result = candidate
                     report = candidateReport
@@ -471,11 +476,17 @@ class AiClient(private val client: OkHttpClient) {
         }
 
         result.copy(
-            quality = QualityGate.validate(result, s, allowed, isFollowUp, nonClaimIdentifiers, bundle?.data?.score?.toString()),
+            quality = QualityGate.validate(result, s, allowed, isFollowUp, nonClaimIdentifiers, bundle?.data?.score?.toString(), salutation = salutation),
             modelUsed = activeModel,
             promptTokens = totalPromptTokens,
             completionTokens = totalCompletionTokens
         )
+    }
+
+    /** Parse + deterministic salutation guard: a mailbox brand can never survive into the text. */
+    private fun parseGuarded(raw: String, s: Settings, salutation: String, mailboxDomain: String): AiResult {
+        val parsed = finalize(QualityGate.bestSubject(parseAiResult(raw)), s)
+        return parsed.copy(body = SalutationBuilder.enforce(parsed.body, salutation, mailboxDomain))
     }
 
     /** Signature + opt-out footer are added deterministically, never hallucinated or duplicated. */
@@ -517,7 +528,11 @@ class AiClient(private val client: OkHttpClient) {
         val allowed = QualityGate.allowedNumbers(bundle)
         val nonClaimIdentifiers = listOfNotNull(bundle?.domain, bundle?.data?.scanId, domain, email, contactName)
             .map { it.trim() }.filter { it.isNotBlank() }.sortedByDescending { it.length }.toSet()
-        return QualityGate.validate(result, s, allowed, isFollowUp, nonClaimIdentifiers, bundle?.data?.score?.toString())
+        val salutation = SalutationBuilder.salutation(contactName, domain, "")
+        return QualityGate.validate(
+            result, s, allowed, isFollowUp, nonClaimIdentifiers, bundle?.data?.score?.toString(),
+            salutation = salutation
+        )
     }
 
     private fun buildFacts(
@@ -530,10 +545,33 @@ class AiClient(private val client: OkHttpClient) {
         isFollowUp: Boolean,
         previousBody: String?,
         domain: String,
-        customerReplyText: String? = null
+        customerReplyText: String? = null,
+        salutation: String = "",
+        mailboxDomain: String = ""
     ): String {
         val sb = StringBuilder()
-        sb.append("دامنه هدف: ").append(domain.ifBlank { bundle?.domain ?: "" }).append('\n')
+        // The business identity is whatever real company domain we have — never a mailbox domain.
+        val identityDomain = listOf(domain, bundle?.domain.orEmpty())
+            .map { it.trim().lowercase() }
+            .firstOrNull { it.isNotBlank() && !MailboxDomains.isFree(it) }
+            .orEmpty()
+        sb.append("دامنه کسب‌وکار هدف (هویت واقعی شرکت): ")
+            .append(identityDomain.ifBlank { "نامشخص — هیچ نام یا صنعتی برای شرکت حدس نزن" }).append('\n')
+        if (identityDomain.isBlank()) {
+            sb.append("نام کسب‌وکار مخاطب مشخص نیست؛ فقط «مدیریت محترم،» را بنویس و هیچ محصول/صنعت/شرکتی را حدس نزن.\n")
+        }
+        if (MailboxDomains.isFree(mailboxDomain)) {
+            sb.append("هشدار هویت: ایمیل مخاطب روی سرویس صندوق پستی ").append(mailboxDomain)
+                .append(" است؛ این دامنه متعلق به Gmail/Outlook/Yahoo و مشابه است و «کسب‌وکار مخاطب» نیست. ")
+                .append("هرگز نام این سرویس را به‌عنوان شرکت، برند یا صنعت مخاطب ننویس.\n")
+        }
+        context?.displayName?.takeIf { it.isNotBlank() }?.let {
+            sb.append("نام عمومی کسب‌وکار (از وب‌سایت/You.com): ").append(it).append('\n')
+        }
+        if (salutation.isNotBlank()) {
+            sb.append("سلام تعیین‌شده توسط برنامه (خط اول باید دقیقاً همین باشد و هیچ نام دیگری در آن نیاید): «")
+                .append(salutation).append("»\n")
+        }
         sb.append("نام مخاطب: ").append(contactName?.takeIf { it.isNotBlank() } ?: "مدیریت محترم").append('\n')
         sb.append("سبک نگارش انتخاب‌شده: ").append(styleDesc(style)).append('\n')
 

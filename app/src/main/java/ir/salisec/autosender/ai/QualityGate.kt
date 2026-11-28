@@ -1,6 +1,8 @@
 package ir.salisec.autosender.ai
 
+import ir.salisec.autosender.data.MailboxDomains
 import ir.salisec.autosender.data.ReportBundle
+import ir.salisec.autosender.data.SalutationBuilder
 import ir.salisec.autosender.data.Settings
 
 /** Enforces the agreed red lines BEFORE a human is allowed to approve an email:
@@ -65,7 +67,8 @@ object QualityGate {
         allowed: Set<String>,
         isFollowUp: Boolean = false,
         nonClaimIdentifiers: Set<String> = emptySet(),
-        scoreValue: String? = null
+        scoreValue: String? = null,
+        salutation: String = ""
     ): QualityReport {
         val all = listOf(result.subject, result.preheader, result.body, result.cta).joinToString("\n")
         val lower = normalizeDigits(all).lowercase()
@@ -80,6 +83,18 @@ object QualityGate {
 
         if (lower.trimStart().startsWith("re:") || lower.trimStart().startsWith("fwd:")) {
             blockers.add("موضوع جعلی Re:/Fwd: ممنوع است")
+        }
+
+        // Identity guard: the opening line must address the recipient's business, never their
+        // mailbox provider (e.g. "مدیریت محترم Outlook" for someone@outlook.com).
+        if (salutation.isNotBlank()) {
+            val opening = result.body.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }.orEmpty()
+            val wrongBrand = MailboxDomains.brandIn(opening)
+            if (wrongBrand.isNotBlank() && !salutation.contains(wrongBrand, ignoreCase = true)) {
+                blockers.add("هویت کسب‌وکار اشتباه: «$wrongBrand» (ارائه‌دهنده ایمیل) در ابتدای متن آمده؛ نام کسب‌وکار مخاطب باید نوشته شود")
+            } else if (opening.isNotBlank() && !SalutationBuilder.isGreeting(opening)) {
+                issues.add("خط اول باید با سلام تعیین‌شده شروع شود: «$salutation»")
+            }
         }
 
         // Domains/emails and deterministic local signature/footer are identifiers, not numeric claims.

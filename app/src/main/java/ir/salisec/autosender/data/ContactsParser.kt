@@ -24,17 +24,29 @@ object ContactsParser {
 
     fun parse(raw: String): List<Contact> {
         val out = linkedMapOf<String, Contact>()
-        fun addContact(domain: String, email: String, name: String?) {
+        fun addContact(domain: String, email: String, name: String?, businessHint: String = "") {
             val cleanEmail = email.trim().lowercase()
             val cleanDomain = cleanDomain(domain).ifBlank { cleanDomain(cleanEmail.substringAfter('@')) }
             if (!strictEmailRegex.matches(cleanEmail)) return
             if (cleanDomain.isEmpty() || !DomainValidator.isValid(cleanDomain)) return
+            val emailDomain = cleanDomain(cleanEmail.substringAfter('@'))
+            val hint = cleanDomain(businessHint)
+            // Only an explicitly stated, non-mailbox domain is a business identity. A bare
+            // `someone@outlook.com` row leaves businessDomain empty instead of pretending
+            // that Outlook is the recipient's company.
+            val businessDomain = when {
+                hint.isNotBlank() && hint != emailDomain &&
+                    DomainValidator.isValid(hint) && !MailboxDomains.isFree(hint) -> hint
+                MailboxDomains.isFree(emailDomain) -> ""
+                else -> emailDomain
+            }
             if (!out.containsKey(cleanEmail)) {
                 out[cleanEmail] = Contact(
                     domain = cleanDomain,
                     email = cleanEmail,
                     name = name?.trim()?.takeIf { it.isNotBlank() },
-                    isRole = isRoleEmail(cleanEmail)
+                    isRole = isRoleEmail(cleanEmail),
+                    businessDomain = businessDomain
                 )
             }
         }
@@ -68,9 +80,10 @@ object ContactsParser {
                     p0Email && !p1Email -> {
                         val email = parts[0].lowercase()
                         val second = parts[1]
-                        val explicitDomain = if (DomainValidator.isValid(cleanDomain(second))) cleanDomain(second) else email.substringAfter('@')
-                        val name = if (DomainValidator.isValid(cleanDomain(second))) parts.getOrNull(2) else second
-                        addContact(explicitDomain, email, name)
+                        val explicit = DomainValidator.isValid(cleanDomain(second))
+                        val explicitDomain = if (explicit) cleanDomain(second) else email.substringAfter('@')
+                        val name = if (explicit) parts.getOrNull(2) else second
+                        addContact(explicitDomain, email, name, businessHint = if (explicit) explicitDomain else "")
                     }
                     // Format: "domain, email, [name]"
                     p1Email -> {
@@ -79,7 +92,7 @@ object ContactsParser {
                         val name = parts.getOrNull(2)
                         // Keep strict header/invalid-row rejection when 3 columns or explicit invalid domain token
                         if (DomainValidator.isValid(domain)) {
-                            addContact(domain, email, name)
+                            addContact(domain, email, name, businessHint = domain)
                         }
                     }
                     // Multiple plain emails separated by commas on one line

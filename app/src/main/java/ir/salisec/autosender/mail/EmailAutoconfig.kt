@@ -345,8 +345,11 @@ object EmailAutoconfig {
      * Supports `<accounts><account><name>...</name><incoming-server type="IMAP">...<outgoing-server type="SMTP">...</accounts>`.
      */
     fun parseK9Settings(xml: String): K9ImportedAccount? {
-        if (!xml.contains("<account", ignoreCase = true) ||
-            (!xml.contains("incoming-server", ignoreCase = true) && !xml.contains("outgoing-server", ignoreCase = true))
+        // Pasted/exported files may start with a BOM or blank lines. An XML declaration is
+        // only legal at offset 0, so normalise before both sniffing and parsing.
+        val source = xml.removePrefix("\uFEFF").trimStart()
+        if (!source.contains("<account", ignoreCase = true) ||
+            (!source.contains("incoming-server", ignoreCase = true) && !source.contains("outgoing-server", ignoreCase = true))
         ) {
             return null
         }
@@ -356,7 +359,7 @@ object EmailAutoconfig {
                     setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
                 } catch (_: Exception) { }
             }
-            val doc = dbf.newDocumentBuilder().parse(InputSource(StringReader(xml)))
+            val doc = dbf.newDocumentBuilder().parse(InputSource(StringReader(source)))
             val root = doc.documentElement ?: return null
 
             fun directOrNestedTag(parent: Element, tag: String): String {

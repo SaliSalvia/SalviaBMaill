@@ -152,6 +152,9 @@ class EmailAutoconfigTest {
 
     @Test
     fun parsesK9sIdentityNameAndSignatureWhenPresent() {
+        // The multi-line signature value keeps its continuation line flush-left, so trimIndent()
+        // cannot remove the common indent. Without trimStart() the XML declaration would not be
+        // at offset 0, the parser would reject the fixture and parseK9Settings would return null.
         val k9sXml = """
             <?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
             <k9settings version="111" format="1">
@@ -188,7 +191,7 @@ https://salisec.ir</value>
                 </account>
               </accounts>
             </k9settings>
-        """.trimIndent()
+        """.trimIndent().trimStart()
 
         val parsed = EmailAutoconfig.parseK9Settings(k9sXml)
         assertNotNull(parsed)

@@ -3,6 +3,7 @@ package ir.salisec.autosender.ai
 import ir.salisec.autosender.data.CompanyCacheDao
 import ir.salisec.autosender.data.CompanyCacheEntity
 import ir.salisec.autosender.data.CompanyContext
+import ir.salisec.autosender.data.MailboxDomains
 import ir.salisec.autosender.data.Settings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -78,6 +79,9 @@ class Enricher(
     ): CompanyContext = withContext(Dispatchers.IO) {
         val cleanDomain = domain.trim().lowercase().removePrefix("www.").trimEnd('.')
         if (cleanDomain.isBlank()) return@withContext CompanyContext("", "")
+        // A mailbox provider is not the business: researching outlook.com/gmail.com would
+        // describe Microsoft/Google instead of the recipient's company.
+        if (MailboxDomains.isFree(cleanDomain)) return@withContext CompanyContext("", "")
 
         if (!forceRefresh) {
             cache[cleanDomain]?.takeIf { it.summary.isNotBlank() }?.let { return@withContext it }
@@ -98,6 +102,7 @@ class Enricher(
         }
 
         val siteInsight = fetchLiveSiteSnapshot(cleanDomain)
+        val identityName = identityNameFrom(siteInsight)
         val hasYou = s.youKey.isNotBlank() && s.youEndpoint.isNotBlank()
 
         var youOverview = ""
@@ -156,7 +161,7 @@ class Enricher(
         val uniqueSources = sources.distinct().take(6)
 
         if (combinedSummary.isNotBlank()) {
-            CompanyContext(cleanDomain, combinedSummary, uniqueSources).also { res ->
+            CompanyContext(cleanDomain, combinedSummary, uniqueSources, identityName).also { res ->
                 cache[cleanDomain] = res
                 try {
                     val srcJson = JSONArray().apply { res.sources.forEach { put(it) } }.toString()
@@ -164,8 +169,21 @@ class Enricher(
                 } catch (_: Exception) { }
             }
         } else {
-            CompanyContext(cleanDomain, "", uniqueSources)
+            CompanyContext(cleanDomain, "", uniqueSources, identityName)
         }
+    }
+
+    /** Short public business name from the live site title; empty for mailbox brands. */
+    private fun identityNameFrom(site: SiteSnapshot?): String {
+        val raw = site?.title?.trim().orEmpty()
+        if (raw.isBlank()) return ""
+        val primary = raw.split('|', '-', '–', '—', ':', '·')
+            .map { it.trim() }
+            .firstOrNull { it.length in 3..60 }
+            .orEmpty()
+        val name = primary.ifBlank { raw }.take(60).trim()
+        if (name.length < 2 || MailboxDomains.mentionsBrand(name)) return ""
+        return name
     }
 
     internal data class SiteSnapshot(
